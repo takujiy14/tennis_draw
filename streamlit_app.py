@@ -4,8 +4,8 @@ import random
 # ページの設定
 st.set_page_config(page_title="テニス抽選アプリ", page_icon="🎾", layout="centered")
 
-st.title("🎾 テニス抽選 (完全1巡連番・対戦被り完全回避版)")
-st.write("1巡目の終わりに発生する、特定のペアや対戦カードの連続重複を徹底的に回避します。")
+st.title("🎾 テニス抽選 (試合数格差・最小化版)")
+st.write("対戦の重複を避けつつ、全員の試合数の差を【最大1試合分以内】に絶対におさめます。")
 
 # --- 1. 入力エリア ---
 col1, col2 = st.columns(2)
@@ -29,106 +29,96 @@ if st.button("✨ 抽選する", type="primary"):
             'id': i,
             'count': 0,
             'partners': {j: 0 for j in range(1, num_p + 1) if i != j},
-            'opponents': {j: 0 for j in range(1, num_p + 1) if i != j}, # 対戦回数を記録
+            'opponents': {j: 0 for j in range(1, num_p + 1) if i != j},
             'last_played': -1 
         })
 
     match_list = []
     match_no = 1
     set_no = 1
-    next_serial_id = 1  # 次に連番で入るべきID
+    next_serial_id = 1  # 最初期の1巡用連番カウンター
     
     while match_no <= 20:
         pool = [p for p in players]
         current_set_matches = []
-        set_selected_ids = []  # このセットで既に選ばれた人
+        set_selected_ids = []  # このセット（回戦）で既に選ばれた人
         
         for c in range(1, num_c + 1):
             if match_no > 20: break
             
-            # --- 選出ロジック ---
+            selected_ids = []
+            
+            # --- 1巡目の完全連番フェーズ ---
             if next_serial_id <= num_p:
-                selected_ids = []
-                # 1巡目の連番メンバーを可能な限り入れる
                 for _ in range(4):
                     if next_serial_id <= num_p:
                         selected_ids.append(next_serial_id)
                         next_serial_id += 1
                 
-                # 4人に満たない場合の補充処理（徹底対策）
+                # 1巡目の最後の端数補充（ここでも試合数の少なさを絶対最優先）
                 if len(selected_ids) < 4:
                     needed = 4 - len(selected_ids)
+                    current_sel = [p for p in players if p['id'] in selected_ids]
                     
-                    # いま選ばれている人たち（例：13, 14番）
-                    current_selected_players = [p for p in players if p['id'] in selected_ids]
-                    
-                    # 補充候補のスコア計算
-                    # 同セット未選出 ＞ 過去の対戦回数が少ない ＞ 試合数が少ない ＞ 休んでる期間が長い
-                    def get_fallback_score(player):
+                    # ソート順：試合数が少ない ＞ 直近で休んでる ＞ 対戦被りペナルティ 
+                    def get_initial_fallback_score(player):
                         if player['id'] in selected_ids or player['id'] in set_selected_ids:
-                            return 999999  # すでに選ばれている人は除外
-                        
-                        # 今選ばれている人たちとの「過去の対戦回数の合計」をペナルティにする
-                        opp_penalty = sum(player['opponents'].get(p['id'], 0) for p in current_selected_players)
-                        
-                        # スコアが低いほど優先されるように調整
-                        return (opp_penalty * 1000) + (player['count'] * 10) - (set_no - player['last_played']) + random.random()
-
-                    pool.sort(key=get_fallback_score)
+                            return 999999
+                        opp_penalty = sum(player['opponents'].get(p['id'], 0) for p in current_sel)
+                        # 試合数の重みを圧倒的に大きく（10万倍）して格差を絶対出さない
+                        return (player['count'] * 100000) - (set_no - player['last_played']) * 100 + (opp_penalty * 10) + random.random()
                     
-                    # 必要な人数分、最適なプレイヤーを補充
+                    pool.sort(key=get_initial_fallback_score)
                     for _ in range(needed):
-                        if pool and get_fallback_score(pool[0]) < 999999:
+                        if pool and get_initial_fallback_score(pool[0]) < 999999:
                             selected_ids.append(pool.pop(0)['id'])
-                        else:
-                            # 万が一枯渇した場合は制限を緩める
-                            fallback = [p for p in players if p['id'] not in selected_ids]
-                            fallback.sort(key=lambda x: x['count'])
-                            if fallback:
-                                selected_ids.append(fallback[0]['id'])
-
-                # プレイヤーオブジェクトの取得
-                p1 = next(p for p in players if p['id'] == selected_ids[0])
-                p2 = next(p for p in players if p['id'] == selected_ids[1])
-                p3 = next(p for p in players if p['id'] == selected_ids[2])
-                p4 = next(p for p in players if p['id'] == selected_ids[3])
-                
+            
+            # --- 2巡目以降の均等分散フェーズ ---
             else:
-                # 全員が1回以上出た後：分散・ランダムロジック
-                available_pool = [p for p in pool if p['id'] not in set_selected_ids]
-                if len(available_pool) < 4:
-                    available_pool = pool
+                # 1人目の選出（このセットで未選出の人から、試合数が最も少ない人を絶対優先）
+                avail1 = [p for p in players if p['id'] not in set_selected_ids]
+                if not avail1: avail1 = players
+                # 試合数の少なさ（10万倍） ＞ 連続出場回避（1万倍）
+                avail1.sort(key=lambda x: (x['count'] * 100000, -(set_no - x['last_played']) * 10000, random.random()))
+                p1 = avail1[0]
+                selected_ids.append(p1['id'])
                 
-                available_pool.sort(key=lambda x: (x['count'], -(set_no - x['last_played']), random.random()))
-                p1 = available_pool.pop(0)
-                
-                available_pool.sort(key=lambda x: (p1['partners'][x['id']] * 100 + x['count'] + random.random()))
-                p2 = available_pool.pop(0)
-                
-                # 対戦相手の選出（p1, p2との対戦回数が少ない人を優先）
-                available_pool.sort(key=lambda x: (
-                    (p1['opponents'][x['id']] + p2['opponents'][x['id']]) * 100 + x['count'] + random.random()
-                ))
-                p3 = available_pool.pop(0)
-                
-                available_pool.sort(key=lambda x: (p3['partners'][x['id']] * 100 + x['count'] + random.random()))
-                p4 = available_pool.pop(0)
+                # 2, 3, 4人目を順番に選出
+                for _ in range(3):
+                    current_sel = [p for p in players if p['id'] in selected_ids]
+                    avail_next = [p for p in players if p['id'] not in selected_ids and p['id'] not in set_selected_ids]
+                    if not avail_next: 
+                        avail_next = [p for p in players if p['id'] not in selected_ids]
+                    
+                    def get_general_score(player):
+                        # ペアと対戦相手の被りペナルティを合算
+                        partner_penalty = sum(player['partners'].get(p['id'], 0) for p in current_sel)
+                        opp_penalty = sum(player['opponents'].get(p['id'], 0) for p in current_sel)
+                        
+                        # 試合数の少なさ(10万倍) ＞ 連続出場回避(1万倍) ＞ 重複回避
+                        return (player['count'] * 100000) - (set_no - player['last_played']) * 10000 + (partner_penalty * 50) + (opp_penalty * 10) + random.random()
+                    
+                    avail_next.sort(key=get_general_score)
+                    selected_ids.append(avail_next[0]['id'])
+
+            # 4人の確定
+            p1 = next(p for p in players if p['id'] == selected_ids[0])
+            p2 = next(p for p in players if p['id'] == selected_ids[1])
+            p3 = next(p for p in players if p['id'] == selected_ids[2])
+            p4 = next(p for p in players if p['id'] == selected_ids[3])
 
             # 状態の更新
             selected_this_match = [p1['id'], p2['id'], p3['id'], p4['id']]
             set_selected_ids.extend(selected_this_match)
-            pool = [p for p in pool if p['id'] not in selected_this_match]
 
             # --- データ更新 ---
             for p in [p1, p2, p3, p4]:
                 p['count'] += 1
                 p['last_played'] = set_no
                 
-            # ペアの組合せ記録
+            # ペアと対戦履歴の記録
             p1['partners'][p2['id']] += 1; p2['partners'][p1['id']] += 1
             p3['partners'][p4['id']] += 1; p4['partners'][p3['id']] += 1
-            
-            # 対戦相手の記録（p1&p2 vs p3&p4）
             for opp in [p3, p4]:
                 p1['opponents'][opp['id']] += 1; opp['opponents'][p1['id']] += 1
                 p2['opponents'][opp['id']] += 1; opp['opponents'][p2['id']] += 1
@@ -143,7 +133,7 @@ if st.button("✨ 抽選する", type="primary"):
         set_no += 1
 
     # --- 3. 表示処理 ---
-    st.success("🎉 重複・連続対戦を徹底回避した乱数表が完成しました！")
+    st.success("🎉 試合数の格差を最小限に抑えた乱数表が完成しました！")
     
     for s in match_list:
         if not s['matches']: continue
